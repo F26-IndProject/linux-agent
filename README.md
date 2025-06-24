@@ -11,7 +11,7 @@ This is an enhanced version of the Linux Activity Agent with plugin support, all
 - **Easy Management**: CLI commands for plugin creation and management
 
 ## Quick Start
-1. Extract files to a directory
+1. Extract files to a directory (activity_agent + install_agent.sh)
 2. Run: `sudo ./install_agent.sh`
 3. Start agent: `sudo systemctl start activity-agent`
 
