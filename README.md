@@ -1,23 +1,61 @@
-# Linux Activity Agent
+# Enhanced Linux Activity Agent
 
-This agent runs as root and emulates the actions of users with different roles.: admin, developer, user.
+## Overview
+This is an enhanced version of the Linux Activity Agent with plugin support, allowing you to easily add new applications through JSON configuration files.
 
+## Features
+- **Plugin System**: Add new applications via JSON templates
+- **Python Extensions**: Create custom logic with Python classes
+- **Smart Scheduling**: Work hours, break times, intelligent activity patterns
+- **System Integration**: Systemd service, automatic startup, logging
+- **Easy Management**: CLI commands for plugin creation and management
 
-## Features ()
-- Executes commands from different users
-- Simulation of clicks via xdotool
-- Logging to a file
-- Metrics (execution time, errors)
-- Systemd service
+## Quick Start
+1. Extract files to a directory
+2. Run: `sudo ./install_agent.sh`
+3. Start agent: `sudo systemctl start activity-agent`
 
-# Iinstalling
+## Plugin Management
+```bash
+# List available plugins
+sudo activity_agent --list-plugins
 
-Usage on target machine:
-1. Unpack archive:
-  tar -xzf linux_activity_agent.tar.gz
+# Create new plugin
+sudo activity_agent --create-plugin "Discord"
 
-2. Install (will install all applications automatically):
-  sudo ./install_agent.sh
+# Edit plugin configuration
+sudo nano /opt/linux_agent/plugins/configs/discord.json
 
-3. The agent will start automatically and will run on schedule.
+# Restart to load changes
+sudo systemctl restart activity-agent
+```
 
+## Plugin Directory Structure
+```
+/opt/linux_agent/plugins/
+├── configs/          # JSON plugin configurations
+│   ├── discord.json
+│   ├── telegram.json
+│   └── your_app.json
+└── scripts/          # Optional Python extensions
+    ├── telegram.py
+    └── your_app.py
+```
+
+## Monitoring
+```bash
+# View logs
+sudo journalctl -u activity-agent -f
+
+# Check status
+sudo systemctl status activity-agent
+
+# Stop agent
+sudo systemctl stop activity-agent
+```
+
+## Configuration
+Main user configuration: `/opt/linux_agent/configs/user_config.json`
+Plugin configurations: `/opt/linux_agent/plugins/configs/*.json`
+
+For detailed documentation and examples, visit the project repository.
