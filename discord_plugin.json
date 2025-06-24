@@ -1,0 +1,230 @@
+{
+  "app_info": {
+    "name": "Discord",
+    "display_name": "Discord Desktop",
+    "category": "communication",
+    "description": "Discord voice and text chat application for gamers and communities",
+    "version": "1.0.0",
+    "author": "User",
+    "tags": ["chat", "gaming", "voice", "communication"]
+  },
+  "installation": {
+    "check_command": "discord --version",
+    "install_method": "deb",
+    "install_commands": [
+      "wget -O discord.deb 'https://discord.com/api/download?platform=linux&format=deb'",
+      "sudo dpkg -i discord.deb",
+      "sudo apt-get install -f -y"
+    ],
+    "post_install_commands": [
+      "rm discord.deb"
+    ],
+    "dependencies": [
+      "xdotool"
+    ]
+  },
+  "execution": {
+    "open_command": "discord",
+    "close_command": "pkill -f discord",
+    "window_class": "discord",
+    "startup_delay": 8,
+    "environment_vars": {}
+  },
+  "activities": [
+    {
+      "id": "check_servers",
+      "name": "Check Servers",
+      "description": "Browse through available servers and channels",
+      "weight": 35,
+      "min_duration": 15,
+      "max_duration": 45,
+      "commands": [
+        {
+          "type": "key_combination",
+          "keys": "ctrl+k",
+          "delay": 1
+        },
+        {
+          "type": "type_text",
+          "text": "general",
+          "delay": 2
+        },
+        {
+          "type": "key",
+          "key": "Return",
+          "delay": 3
+        },
+        {
+          "type": "key",
+          "key": "Page_Up Page_Up",
+          "delay": 2
+        }
+      ],
+      "conditions": {
+        "time_of_day": ["morning", "afternoon", "evening"]
+      }
+    },
+    {
+      "id": "send_message",
+      "name": "Send Message",
+      "description": "Send a message in current channel",
+      "weight": 25,
+      "min_duration": 5,
+      "max_duration": 30,
+      "commands": [
+        {
+          "type": "type_text",
+          "text": "Hey everyone! 👋",
+          "delay": 1
+        },
+        {
+          "type": "key",
+          "key": "Return",
+          "delay": 0.5
+        }
+      ],
+      "conditions": {
+        "time_of_day": ["morning", "afternoon"]
+      }
+    },
+    {
+      "id": "check_notifications",
+      "name": "Check Notifications",
+      "description": "Check mentions and direct messages",
+      "weight": 30,
+      "min_duration": 10,
+      "max_duration": 60,
+      "commands": [
+        {
+          "type": "key_combination",
+          "keys": "ctrl+shift+i",
+          "delay": 2
+        },
+        {
+          "type": "key",
+          "key": "Down Down Down",
+          "delay": 3
+        },
+        {
+          "type": "key",
+          "key": "Return",
+          "delay": 2
+        }
+      ]
+    },
+    {
+      "id": "voice_channel_check",
+      "name": "Voice Channel Check",
+      "description": "Check who's in voice channels",
+      "weight": 20,
+      "min_duration": 8,
+      "max_duration": 25,
+      "commands": [
+        {
+          "type": "key_combination",
+          "keys": "ctrl+shift+v",
+          "delay": 2
+        },
+        {
+          "type": "wait",
+          "time": 3
+        },
+        {
+          "type": "key",
+          "key": "Escape",
+          "delay": 1
+        }
+      ],
+      "conditions": {
+        "time_of_day": ["afternoon", "evening"]
+      }
+    },
+    {
+      "id": "search_messages",
+      "name": "Search Messages",
+      "description": "Search for specific messages or content",
+      "weight": 15,
+      "min_duration": 20,
+      "max_duration": 90,
+      "commands": [
+        {
+          "type": "key_combination",
+          "keys": "ctrl+f",
+          "delay": 1
+        },
+        {
+          "type": "type_text",
+          "text": "meeting",
+          "delay": 2
+        },
+        {
+          "type": "key",
+          "key": "Return",
+          "delay": 3
+        },
+        {
+          "type": "key",
+          "key": "Escape",
+          "delay": 1
+        }
+      ]
+    },
+    {
+      "id": "status_update",
+      "name": "Update Status",
+      "description": "Change user status or custom message",
+      "weight": 10,
+      "min_duration": 5,
+      "max_duration": 20,
+      "commands": [
+        {
+          "type": "key_combination",
+          "keys": "ctrl+shift+s",
+          "delay": 2
+        },
+        {
+          "type": "key",
+          "key": "Down",
+          "delay": 1
+        },
+        {
+          "type": "key",
+          "key": "Return",
+          "delay": 1
+        }
+      ],
+      "conditions": {
+        "time_of_day": ["morning", "evening"]
+      }
+    }
+  ],
+  "settings": {
+    "session_duration": {
+      "min": 300,
+      "max": 900
+    },
+    "activity_frequency": {
+      "min": 15,
+      "max": 90
+    },
+    "app_switch_pause": {
+      "min": 30,
+      "max": 120
+    },
+    "usage_probability": 0.6,
+    "work_hours_only": false
+  },
+  "custom_scripts": {
+    "before_start": [
+      "echo 'Starting Discord session'",
+      "sleep 3"
+    ],
+    "after_close": [
+      "echo 'Discord session ended'",
+      "pkill -f discord"
+    ],
+    "periodic_check": [
+      "pgrep -f discord > /dev/null || echo 'Discord not running'"
+    ]
+  }
+}

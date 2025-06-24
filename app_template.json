@@ -1,0 +1,145 @@
+{
+  "app_info": {
+    "name": "Example App",
+    "display_name": "Example Application",
+    "category": "development",
+    "description": "Example application for demonstration purposes",
+    "version": "1.0.0",
+    "author": "Your Name",
+    "tags": ["example", "demo", "development"]
+  },
+  "installation": {
+    "check_command": "example-app --version",
+    "install_method": "apt",
+    "install_commands": [
+      "sudo apt update",
+      "sudo apt install -y example-app"
+    ],
+    "post_install_commands": [
+      "example-app --setup"
+    ],
+    "dependencies": [
+      "xdotool"
+    ]
+  },
+  "execution": {
+    "open_command": "example-app",
+    "close_command": "pkill -f example-app",
+    "window_class": "ExampleApp",
+    "startup_delay": 3,
+    "environment_vars": {
+      "EXAMPLE_VAR": "value"
+    }
+  },
+  "activities": [
+    {
+      "id": "open_file",
+      "name": "Open File",
+      "description": "Opens a file in the application",
+      "weight": 30,
+      "min_duration": 10,
+      "max_duration": 60,
+      "commands": [
+        {
+          "type": "key_combination",
+          "keys": "ctrl+o",
+          "delay": 1
+        },
+        {
+          "type": "type_text",
+          "text": "example.txt",
+          "delay": 0.5
+        },
+        {
+          "type": "key",
+          "key": "Return",
+          "delay": 2
+        }
+      ],
+      "conditions": {
+        "time_of_day": ["morning", "afternoon"],
+        "required_files": ["example.txt"]
+      }
+    },
+    {
+      "id": "edit_content",
+      "name": "Edit Content",
+      "description": "Simulates editing content",
+      "weight": 50,
+      "min_duration": 30,
+      "max_duration": 300,
+      "commands": [
+        {
+          "type": "type_text",
+          "text": "print('Hello, World!')",
+          "delay": 1
+        },
+        {
+          "type": "key_combination",
+          "keys": "ctrl+s",
+          "delay": 0.5
+        }
+      ],
+      "conditions": {
+        "requires_activity": "open_file"
+      }
+    },
+    {
+      "id": "search_function",
+      "name": "Search Function",
+      "description": "Performs search in the application",
+      "weight": 20,
+      "min_duration": 5,
+      "max_duration": 30,
+      "commands": [
+        {
+          "type": "key_combination",
+          "keys": "ctrl+f",
+          "delay": 1
+        },
+        {
+          "type": "type_text",
+          "text": "function",
+          "delay": 0.5
+        },
+        {
+          "type": "key",
+          "key": "Return",
+          "delay": 1
+        },
+        {
+          "type": "key",
+          "key": "Escape",
+          "delay": 0.5
+        }
+      ]
+    }
+  ],
+  "settings": {
+    "session_duration": {
+      "min": 300,
+      "max": 900
+    },
+    "activity_frequency": {
+      "min": 10,
+      "max": 60
+    },
+    "app_switch_pause": {
+      "min": 30,
+      "max": 120
+    },
+    "usage_probability": 0.8,
+    "work_hours_only": true
+  },
+  "custom_scripts": {
+    "before_start": [
+      "echo 'Starting Example App session'"
+    ],
+    "after_close": [
+      "echo 'Example App session ended'"
+    ],
+    "periodic_check": [
+      "pgrep -f example-app > /dev/null || echo 'App not running'"
+    ]
+  }
+}
