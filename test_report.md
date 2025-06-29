@@ -8,7 +8,10 @@ The Linux Activity Agent with Plugin Support and Heartbeat functionality has und
 
 - **OS**: Ubuntu 22.04 LTS
 - **Python Version**: 3.10.6
+- **Test Duration**: 5 days
+- **Test Users**: 2 (Developer linux agent, Customer)
 
+  
 ## Test Categories and Results
 
 ### 1. Plugin System Testing
