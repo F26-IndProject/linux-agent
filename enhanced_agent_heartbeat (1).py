@@ -1,0 +1,1766 @@
+#!/usr/bin/env python3
+"""
+Enhanced Unified Linux Activity Agent with Plugin Support and Heartbeat
+Поддерживает загрузку и выполнение плагинов приложений с отправкой heartbeat
+"""
+
+import os
+import sys
+import time
+import json
+import subprocess
+import logging
+import random
+import shutil
+import urllib.request
+import urllib.parse
+import tempfile
+import threading
+import socket
+import platform
+from datetime import datetime, timedelta
+from pathlib import Path
+
+# Добавляем путь к плагинам в sys.path
+PLUGIN_DIR = "/opt/linux_agent/plugins"
+if PLUGIN_DIR not in sys.path:
+    sys.path.insert(0, PLUGIN_DIR)
+
+try:
+    from plugin_manager import PluginManager, ApplicationPlugin
+except ImportError:
+    logging.error("Plugin manager not found. Please ensure plugin_manager.py is in the plugins directory.")
+    PluginManager = None
+    ApplicationPlugin = None
+
+# Пути для конфигурационных файлов
+DEFAULT_CONFIG_DIR = "/opt/linux_agent/configs"
+USER_CONFIG_DIR = os.path.expanduser("~/.config/activity_agent")
+SYSTEM_CONFIG_DIR = "/etc/activity_agent"
+
+# Дефолтная конфигурация пользователя
+DEFAULT_USER_CONFIG = {
+    "user_id": "USR0012345",
+    "username": "john_doe",
+    "full_name": "John Doe", 
+    "role": "Junior Developer",
+    "work_schedule": {
+        "start_time": "01:00",
+        "end_time": "23:50",
+        "breaks": [
+            {
+                "start": "16:00",
+                "duration_minutes": 60
+            }
+        ]
+    },
+    "operating_system": "Linux Ubuntu 22.04",
+    "applications_used": [
+    	"Visual Studio Code", 
+        "leafpad"
+    ],
+    "activity_pattern": "Regular office hours with lunch break",
+    "department": "Development",
+    "location": "Headquarters",
+    "plugin_support": {
+        "enabled": True,
+        "plugins_directory": "/opt/linux_agent/plugins",
+        "auto_load": True,
+        "fallback_to_builtin": True
+    }
+}
+
+# Жёсткая конфигурация heartbeat (НЕ ИЗМЕНЯЕТСЯ ПОЛЬЗОВАТЕЛЕМ)
+HEARTBEAT_CONFIG = {
+    "enabled": True,
+    "backend_url": "http://localhost:8000/api/agents/heartbeat",
+    "interval_hours": 24,  # Раз в день
+    "include_statistics": True,
+    "api_key": "sk-agent-heartbeat-key-2024", 
+    "timeout_seconds": 30,
+    "retry_count": 3,
+    "retry_delay_seconds": 60
+}
+
+def setup_logging(log_level='INFO'):
+    """Настраивает систему логирования"""
+    log_dir = "/var/log/activity_agent"
+    if not os.path.exists(log_dir):
+        try:
+            os.makedirs(log_dir, exist_ok=True)
+        except PermissionError:
+            log_dir = "/tmp"
+    
+    log_file = os.path.join(log_dir, "activity_agent.log")
+    
+    logging.basicConfig(
+        level=getattr(logging, log_level.upper()),
+        format='%(asctime)s %(levelname)s: %(message)s',
+        handlers=[
+            logging.FileHandler(log_file),
+            logging.StreamHandler()
+        ]
+    )
+
+class HeartbeatManager:
+    """Менеджер для отправки heartbeat на backend"""
+    
+    def __init__(self, user_config, agent_reference):
+        # Используем жёсткую конфигурацию, не из пользовательского конфига
+        self.config = HEARTBEAT_CONFIG
+        self.user_config = user_config  # Данные пользователя для отправки
+        self.agent = agent_reference
+        
+        self.enabled = self.config.get('enabled', True)
+        self.backend_url = self.config.get('backend_url', '')
+        self.interval_hours = self.config.get('interval_hours', 24)
+        self.include_statistics = self.config.get('include_statistics', True)
+        self.api_key = self.config.get('api_key', '')
+        self.timeout = self.config.get('timeout_seconds', 30)
+        self.retry_count = self.config.get('retry_count', 3)
+        self.retry_delay = self.config.get('retry_delay_seconds', 60)
+        
+        self.last_heartbeat_time = None
+        self.heartbeat_thread = None
+        self.stop_event = threading.Event()
+        
+        # Информация о системе
+        self.system_info = self._collect_system_info()
+    
+    def _collect_system_info(self):
+        """Собирает информацию о системе"""
+        try:
+            return {
+                'hostname': socket.gethostname(),
+                'platform': platform.platform(),
+                'python_version': platform.python_version(),
+                'cpu_count': os.cpu_count(),
+                'agent_version': '1.0.0'
+            }
+        except Exception as e:
+            logging.error(f"Failed to collect system info: {e}")
+            return {}
+    
+    def _prepare_heartbeat_data(self):
+        """Подготавливает данные для отправки heartbeat"""
+        data = {
+            'timestamp': datetime.now().isoformat(),
+            'agent_id': self.user_config.get('user_id', 'unknown'),
+            'username': self.user_config.get('username', 'unknown'),
+            'role': self.user_config.get('role', 'unknown'),
+            'department': self.user_config.get('department', 'unknown'),
+            'location': self.user_config.get('location', 'unknown'),
+            'system_info': self.system_info,
+            'status': 'active'
+        }
+        
+        # Добавляем статистику если включено
+        if self.include_statistics and hasattr(self.agent, 'get_system_statistics'):
+            try:
+                statistics = self.agent.get_system_statistics()
+                data['statistics'] = statistics
+            except Exception as e:
+                logging.error(f"Failed to get system statistics: {e}")
+        
+        # Добавляем информацию о текущей активности
+        if hasattr(self.agent, 'current_app') and self.agent.current_app:
+            data['current_activity'] = {
+                'application': self.agent.current_app,
+                'is_plugin': self.agent.current_plugin is not None
+            }
+        
+        return data
+    
+    def _send_heartbeat(self):
+        """Отправляет heartbeat на backend"""
+        if not self.enabled or not self.backend_url:
+            return False
+        
+        data = self._prepare_heartbeat_data()
+        
+        # Преобразуем в JSON
+        json_data = json.dumps(data).encode('utf-8')
+        
+        # Подготавливаем заголовки
+        headers = {
+            'Content-Type': 'application/json',
+            'User-Agent': 'LinuxActivityAgent/1.0'
+        }
+        
+        if self.api_key:
+            headers['Authorization'] = f'Bearer {self.api_key}'
+        
+        # Создаем запрос
+        req = urllib.request.Request(
+            self.backend_url,
+            data=json_data,
+            headers=headers,
+            method='POST'
+        )
+        
+        # Пытаемся отправить с повторными попытками
+        for attempt in range(self.retry_count):
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                    if response.status == 200:
+                        response_data = json.loads(response.read().decode('utf-8'))
+                        logging.info(f"Heartbeat sent successfully: {response_data}")
+                        self.last_heartbeat_time = datetime.now()
+                        return True
+                    else:
+                        logging.warning(f"Heartbeat failed with status: {response.status}")
+            
+            except urllib.error.URLError as e:
+                logging.error(f"Failed to send heartbeat (attempt {attempt + 1}/{self.retry_count}): {e}")
+                if attempt < self.retry_count - 1:
+                    time.sleep(self.retry_delay)
+            
+            except Exception as e:
+                logging.error(f"Unexpected error sending heartbeat: {e}")
+                if attempt < self.retry_count - 1:
+                    time.sleep(self.retry_delay)
+        
+        return False
+    
+    def _heartbeat_worker(self):
+        """Рабочий поток для отправки heartbeat"""
+        # Отправляем первый heartbeat сразу при запуске
+        logging.info("Sending initial heartbeat...")
+        self._send_heartbeat()
+        
+        # Затем отправляем по расписанию
+        while not self.stop_event.is_set():
+            # Ждем заданный интервал
+            sleep_seconds = self.interval_hours * 3600
+            
+            # Используем wait с таймаутом для возможности остановки
+            if self.stop_event.wait(timeout=sleep_seconds):
+                break
+            
+            # Отправляем heartbeat
+            logging.info("Sending scheduled heartbeat...")
+            self._send_heartbeat()
+    
+    def start(self):
+        """Запускает отправку heartbeat"""
+        if not self.enabled:
+            logging.info("Heartbeat is disabled in configuration")
+            return
+        
+        if not self.backend_url:
+            logging.warning("Heartbeat backend URL not configured")
+            return
+        
+        logging.info(f"Starting heartbeat manager (interval: {self.interval_hours} hours)")
+        
+        self.heartbeat_thread = threading.Thread(
+            target=self._heartbeat_worker,
+            name="HeartbeatThread",
+            daemon=True
+        )
+        self.heartbeat_thread.start()
+    
+    def stop(self):
+        """Останавливает отправку heartbeat"""
+        if self.heartbeat_thread and self.heartbeat_thread.is_alive():
+            logging.info("Stopping heartbeat manager...")
+            self.stop_event.set()
+            self.heartbeat_thread.join(timeout=5)
+            
+            # Отправляем финальный heartbeat при остановке
+            final_data = self._prepare_heartbeat_data()
+            final_data['status'] = 'stopping'
+            self._send_final_heartbeat(final_data)
+    
+    def _send_final_heartbeat(self, data):
+        """Отправляет финальный heartbeat при остановке"""
+        try:
+            json_data = json.dumps(data).encode('utf-8')
+            headers = {
+                'Content-Type': 'application/json',
+                'User-Agent': 'LinuxActivityAgent/1.0'
+            }
+            
+            if self.api_key:
+                headers['Authorization'] = f'Bearer {self.api_key}'
+            
+            req = urllib.request.Request(
+                self.backend_url,
+                data=json_data,
+                headers=headers,
+                method='POST'
+            )
+            
+            with urllib.request.urlopen(req, timeout=5) as response:
+                if response.status == 200:
+                    logging.info("Final heartbeat sent successfully")
+        except Exception as e:
+            logging.error(f"Failed to send final heartbeat: {e}")
+
+class ConfigManager:
+    """Менеджер конфигураций для работы с внешними файлами"""
+    
+    def __init__(self):
+        self.config_paths = [
+            DEFAULT_CONFIG_DIR,
+            SYSTEM_CONFIG_DIR,
+            USER_CONFIG_DIR
+        ]
+        self.ensure_config_dirs()
+    
+    def ensure_config_dirs(self):
+        """Создает необходимые директории для конфигураций"""
+        for path in self.config_paths:
+            try:
+                os.makedirs(path, exist_ok=True)
+            except PermissionError:
+                logging.warning(f"Cannot create config directory: {path}")
+    
+    def find_config_file(self, config_name):
+        """Ищет файл конфигурации в доступных директориях"""
+        possible_names = [
+            f"{config_name}.json",
+            f"{config_name}_config.json",
+            f"user_{config_name}.json"
+        ]
+        
+        for config_dir in self.config_paths:
+            for name in possible_names:
+                config_path = os.path.join(config_dir, name)
+                if os.path.exists(config_path):
+                    logging.info(f"Found config file: {config_path}")
+                    return config_path
+        
+        return None
+    
+    def load_config(self, config_name=None):
+        """Загружает конфигурацию из файла или возвращает дефолтную"""
+        if config_name:
+            config_file = self.find_config_file(config_name)
+            if config_file:
+                try:
+                    with open(config_file, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    logging.info(f"Loaded config from: {config_file}")
+                    return self.validate_config(config)
+                except Exception as e:
+                    logging.error(f"Failed to load config {config_file}: {e}")
+                    return None
+        
+        # Пытаемся найти любой доступный конфигурационный файл
+        for config_dir in self.config_paths:
+            if os.path.exists(config_dir):
+                for file in os.listdir(config_dir):
+                    if file.endswith('.json') and not file.startswith('plugin_'):
+                        config_path = os.path.join(config_dir, file)
+                        try:
+                            with open(config_path, 'r', encoding='utf-8') as f:
+                                config = json.load(f)
+                            logging.info(f"Auto-loaded config from: {config_path}")
+                            return self.validate_config(config)
+                        except Exception as e:
+                            logging.warning(f"Failed to load {config_path}: {e}")
+                            continue
+        
+        # Если ничего не найдено, используем дефолтную конфигурацию
+        logging.info("Using default configuration")
+        return DEFAULT_USER_CONFIG
+    
+    def validate_config(self, config):
+        """Валидация конфигурации и добавление недостающих полей"""
+        validated_config = DEFAULT_USER_CONFIG.copy()
+        validated_config.update(config)
+        
+        # Проверяем обязательные поля
+        required_fields = ['username', 'work_schedule', 'applications_used']
+        for field in required_fields:
+            if field not in validated_config:
+                logging.warning(f"Missing required field '{field}' in config, using default")
+        
+        return validated_config
+
+class ActivityUtils:
+    """Утилиты для работы с активностью"""
+    
+    @staticmethod
+    def check_app_installed(app_config):
+        """Проверяет, установлено ли приложение"""
+        if 'installation' not in app_config:
+            return True  # Если нет информации об установке, считаем что установлено
+        
+        check_cmd = app_config['installation'].get('check_command')
+        if not check_cmd:
+            return True
+        
+        try:
+            result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
+            return result.returncode == 0
+        except Exception as e:
+            logging.error(f"Failed to check app installation: {e}")
+            return False
+    
+    @staticmethod
+    def install_app(app_name, app_config):
+        """Устанавливает приложение"""
+        if 'installation' not in app_config:
+            logging.warning(f"No installation info for {app_name}")
+            return False
+        
+        install_commands = app_config['installation'].get('install_commands', [])
+        if not install_commands:
+            logging.warning(f"No installation commands for {app_name}")
+            return False
+        
+        logging.info(f"Installing {app_name}...")
+        
+        for cmd in install_commands:
+            logging.info(f"Executing: {cmd}")
+            result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+            if result.returncode != 0:
+                logging.error(f"Installation command failed: {cmd} - {result.stderr}")
+                return False
+            time.sleep(1)
+        
+        return ActivityUtils.check_app_installed(app_config)
+    
+    @staticmethod
+    def get_application_commands(app_name, custom_commands=None):
+        """Возвращает команды для работы с приложением (legacy support)"""
+        # Сначала проверяем кастомные команды из конфигурации
+        if custom_commands and app_name in custom_commands:
+            return custom_commands[app_name]
+        
+        # Затем используем встроенные команды для обратной совместимости
+        app_configs = {
+    "Visual Studio Code": {
+        "open": "/usr/bin/code --no-sandbox --user-data-dir=/tmp/vscode-root",
+        "close": "pkill -f code",
+        
+        "activities": [
+        {
+            "description": "Opening a file",
+            "commands": [
+                "xdotool key ctrl+o",
+                "sleep 0.5",
+                "xdotool type 'main.py'",
+                "xdotool key Return"
+            ]
+        },
+        {
+            "description": "Typing code",
+            "commands": [
+                "xdotool type 'print(\"Hello World\")'",
+                "xdotool key Return", 
+                "xdotool key ctrl+s"
+            ]
+        },
+        {
+            "description": "Creating new file",
+            "commands": [
+                "xdotool key ctrl+n",
+                "sleep 0.3",
+                "xdotool type '# New Python Script'",
+                "xdotool key Return Return",
+                "xdotool type 'import os'",
+                "xdotool key Return",
+                "xdotool type 'import sys'",
+                "xdotool key Return"
+            ]
+        },
+        {
+            "description": "Using terminal",
+            "commands": [
+                "xdotool key ctrl+grave",
+                "sleep 0.5",
+                "xdotool type 'python --version'",
+                "xdotool key Return",
+                "sleep 0.5",
+                "xdotool key ctrl+grave"
+            ]
+        },
+        {
+            "description": "Search in files",
+            "commands": [
+                "xdotool key ctrl+shift+f",
+                "sleep 0.3",
+                "xdotool type 'TODO'",
+                "sleep 0.5",
+                "xdotool key Escape"
+            ]
+        },
+        {
+            "description": "Go to line",
+            "commands": [
+                "xdotool key ctrl+g",
+                "sleep 0.3",
+                "xdotool type '10'",
+                "xdotool key Return"
+            ]
+        },
+        {
+            "description": "Comment/uncomment code",
+            "commands": [
+                "xdotool type 'def hello_world():'",
+                "xdotool key Return",
+                "xdotool type '    print(\"Hello\")'",
+                "xdotool key Return",
+                "xdotool key Up",
+                "xdotool key ctrl+slash",
+                "sleep 0.3",
+                "xdotool key ctrl+slash"
+            ]
+        },
+        {
+            "description": "Split editor",
+            "commands": [
+                "xdotool key ctrl+backslash",
+                "sleep 0.5",
+                "xdotool key ctrl+1",
+                "sleep 0.3",
+                "xdotool key ctrl+2",
+                "sleep 0.3",
+                "xdotool key ctrl+1"
+            ]
+        },
+        {
+            "description": "Quick open file",
+            "commands": [
+                "xdotool key ctrl+p",
+                "sleep 0.3",
+                "xdotool type 'config'",
+                "sleep 0.5",
+                "xdotool key Escape"
+            ]
+        },
+        {
+            "description": "Show command palette",
+            "commands": [
+                "xdotool key ctrl+shift+p",
+                "sleep 0.3",
+                "xdotool type 'theme'",
+                "sleep 0.5",
+                "xdotool key Escape"
+            ]
+        },
+        {
+            "description": "Multiple cursors",
+            "commands": [
+                "xdotool type 'variable1 = 10'",
+                "xdotool key Return",
+                "xdotool type 'variable2 = 20'",
+                "xdotool key Return",
+                "xdotool type 'variable3 = 30'",
+                "xdotool key ctrl+a",
+                "xdotool key alt+shift+i",
+                "xdotool key End",
+                "xdotool type ' # added'",
+                "xdotool key Escape"
+            ]
+        },
+        {
+            "description": "Find and replace",
+            "commands": [
+                "xdotool key ctrl+h",
+                "sleep 0.3",
+                "xdotool type 'print'",
+                "xdotool key Tab",
+                "xdotool type 'logger.info'",
+                "sleep 0.5",
+                "xdotool key Escape"
+            ]
+        },
+        {
+            "description": "Toggle sidebar",
+            "commands": [
+                "xdotool key ctrl+b",
+                "sleep 0.5",
+                "xdotool key ctrl+b"
+            ]
+        },
+        {
+            "description": "Zen mode",
+            "commands": [
+                "xdotool key ctrl+k",
+                "sleep 0.2",
+                "xdotool key z",
+                "sleep 1",
+                "xdotool key Escape Escape"
+            ]
+        },
+        {
+            "description": "Format document",
+            "commands": [
+                "xdotool type 'def messy_function(  x,y ,z  ):'",
+                "xdotool key Return",
+                "xdotool type 'return x+y+z'",
+                "xdotool key ctrl+a",
+                "xdotool key shift+alt+f"
+            ]
+        },
+        {
+            "description": "Navigate between tabs",
+            "commands": [
+                "xdotool key ctrl+Tab",
+                "sleep 0.3",
+                "xdotool key ctrl+Tab",
+                "sleep 0.3",
+                "xdotool key ctrl+shift+Tab"
+            ]
+        },
+        {
+            "description": "Fold/unfold code",
+            "commands": [
+                "xdotool key ctrl+shift+bracketleft",
+                "sleep 0.3",
+                "xdotool key ctrl+shift+bracketright"
+            ]
+        },
+        {
+            "description": "Add import statement",
+            "commands": [
+                "xdotool key ctrl+Home",
+                "xdotool type 'import json'",
+                "xdotool key Return",
+                "xdotool type 'import requests'",
+                "xdotool key Return",
+                "xdotool type 'from datetime import datetime'",
+                "xdotool key Return Return"
+            ]
+        },
+        {
+            "description": "Create function",
+            "commands": [
+                "xdotool type 'def calculate_sum(numbers):'",
+                "xdotool key Return",
+                "xdotool type '    \"\"\"Calculate sum of numbers\"\"\"'",
+                "xdotool key Return",
+                "xdotool type '    total = 0'",
+                "xdotool key Return",
+                "xdotool type '    for num in numbers:'",
+                "xdotool key Return",
+                "xdotool type '        total += num'",
+                "xdotool key Return",
+                "xdotool type '    return total'",
+                "xdotool key Return Return"
+            ]
+        },
+        {
+            "description": "Git operations",
+            "commands": [
+                "xdotool key ctrl+shift+g",
+                "sleep 0.5",
+                "xdotool key Tab Tab",
+                "sleep 0.3",
+                "xdotool key Escape"
+            ]
+        }
+    ]
+    },
+    "Slack": {
+        "open": "slack",
+        "close": "pkill -f slack",
+        "installation": {
+            "check_command": "slack --version",
+            "install_commands": [
+                "wget -O slack.deb https://downloads.slack-edge.com/releases/linux/4.36.140/prod/x64/slack-desktop-4.36.140-amd64.deb",
+                "sudo apt install -y ./slack.deb",
+                "rm slack.deb"
+            ]
+        },
+        "activities": [
+            {
+                "description": "Checking messages",
+                "commands": [
+                    "xdotool key ctrl+k",
+                    "sleep 1",
+                    "xdotool type 'general'",
+                    "xdotool key Return"
+                ]
+            }
+        ]
+    },
+    "Google Chrome": {
+        "open": "google-chrome",
+        "close": "pkill -f chrome",
+        "installation": {
+            "check_command": "google-chrome --version",
+            "install_commands": [
+                "wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | sudo apt-key add -",
+                "sudo sh -c 'echo \"deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main\" >> /etc/apt/sources.list.d/google-chrome.list'",
+                "sudo apt update",
+                "sudo apt install -y google-chrome-stable"
+            ]
+        },
+        "activities": [
+            {
+                "description": "Browsing documentation",
+                "commands": [
+                    "xdotool key ctrl+l",
+                    "xdotool type 'https://docs.python.org'",
+                    "xdotool key Return"
+                ]
+            }
+        ]
+    },
+    "firefox-esr": {
+        "open": "firefox-esr",
+        "close": "pkill -f firefox-esr",
+        "installation": {
+            "check_command": "firefox-esr --version",
+            "install_commands": [
+                "sudo apt update",
+                "sudo apt install -y firefox-esr"
+            ]
+        },
+        "activities": [
+            {
+                "description": "Open new window",
+                "commands": [
+                    "xdotool key ctrl+t",
+                    "sleep 1",
+                    "xdotool type 'https://www.google.com'",
+                    "xdotool key Return"
+                ]
+            },
+            {
+                "description": "Поиск информации",
+                "commands": [
+                    "xdotool key ctrl+l",
+                    "xdotool type 'Linux documentation'",
+                    "xdotool key Return"
+                ]
+            },
+            {
+                "description": "Switch between windows",
+                "commands": [
+                    "xdotool key ctrl+Tab",
+                    "sleep 2",
+                    "xdotool key ctrl+Tab"
+                ]
+            }
+        ]
+    },
+    "leafpad": {
+        "open": "leafpad",
+        "close": "pkill -f leafpad",
+        "installation": {
+            "check_command": "which leafpad",
+            "install_commands": [
+                "sudo apt update",
+                "sudo apt install -y leafpad"
+            ]
+        },
+        "activities": [
+            {
+                "description": "Создание нового файла",
+                "commands": [
+                    "xdotool key ctrl+n",
+                    "sleep 1",
+                    "xdotool type 'Заметки на сегодня'",
+                    "xdotool key Return",
+                    "xdotool key Return"
+                ]
+            },
+            {
+                "description": "Набор текста",
+                "commands": [
+                    "xdotool type 'TODO список:'",
+                    "xdotool key Return",
+                    "xdotool type '- Проверить почту'",
+                    "xdotool key Return",
+                    "xdotool type '- Обновить документацию'",
+                    "xdotool key ctrl+s"
+                ]
+            }
+        ]
+    },
+    "thunar": {
+        "open": "thunar",
+        "close": "pkill -f thunar",
+        "installation": {
+            "check_command": "thunar --version",
+            "install_commands": [
+                "sudo apt update",
+                "sudo apt install -y thunar"
+            ]
+        },
+        "activities": [
+            {
+                "description": "Switch to home directory",
+                "commands": [
+                    "xdotool key ctrl+h",
+                    "sleep 1"
+                ]
+            },
+            {
+                "description": "New folder creation",
+                "commands": [
+                    "xdotool key shift+ctrl+n",
+                    "sleep 1",
+                    "xdotool type 'Рабочие файлы'",
+                    "xdotool key Return"
+                ]
+            },
+            {
+                "description": "Files scrolling",
+                "commands": [
+                    "xdotool key F5",
+                    "sleep 1",
+                    "xdotool key Down",
+                    "sleep 0.5",
+                    "xdotool key Down"
+                ]
+            }
+        ]
+    },
+    "terminal": {
+        "open": "xfce4-terminal || gnome-terminal || xterm",
+        "close": "pkill -f terminal",
+        "installation": {
+            "check_command": "which xfce4-terminal || which gnome-terminal || which xterm",
+            "install_commands": [
+                "sudo apt update",
+                "sudo apt install -y xfce4-terminal || sudo apt install -y gnome-terminal || sudo apt install -y xterm"
+            ]
+        },
+        "activities": [
+            {
+                "description": "Проверка системной информации",
+                "commands": [
+                    "xdotool type 'uname -a'",
+                    "xdotool key Return",
+                    "sleep 2",
+                    "xdotool type 'df -h'",
+                    "xdotool key Return"
+                ]
+            },
+            {
+                "description": "Работа с файлами",
+                "commands": [
+                    "xdotool type 'ls -la'",
+                    "xdotool key Return",
+                    "sleep 1",
+                    "xdotool type 'pwd'",
+                    "xdotool key Return"
+                ]
+            },
+            {
+                "description": "Мониторинг процессов",
+                "commands": [
+                    "xdotool type 'top'",
+                    "xdotool key Return",
+                    "sleep 5",
+                    "xdotool key q"
+                ]
+            }
+        ]
+    },
+    "Docker Desktop": {
+        "open": "systemctl --user start docker-desktop",
+        "close": "systemctl --user stop docker-desktop",
+        "installation": {
+            "check_command": "docker --version",
+            "install_commands": [
+                "sudo apt update",
+                "sudo apt install -y ca-certificates curl gnupg",
+                "sudo install -m 0755 -d /etc/apt/keyrings",
+                "curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
+                "sudo chmod a+r /etc/apt/keyrings/docker.gpg",
+                "echo \"deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable\" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null",
+                "sudo apt update",
+                "sudo apt install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin",
+                "sudo usermod -aG docker $USER"
+            ]
+        },
+        "activities": [
+            {
+                "description": "Checking containers",
+                "commands": [
+                    "xdotool type 'docker ps'",
+                    "xdotool key Return",
+                    "sleep 2"
+                ]
+            }
+        ]
+    }
+} # Вставьте сюда полный словарь
+        
+        app_config = app_configs.get(app_name, {})
+        
+        # Проверяем установку приложения
+        if app_config and not ActivityUtils.check_app_installed(app_config):
+            logging.info(f"{app_name} is not installed, attempting to install...")
+            if ActivityUtils.install_app(app_name, app_config):
+                logging.info(f"{app_name} installed successfully")
+            else:
+                logging.error(f"Failed to install {app_name}")
+                return {}
+        
+        return app_config
+    
+    @staticmethod
+    def is_work_time(current_time, work_schedule):
+        """Проверяет, находится ли текущее время в рабочих часах"""
+        current_time_only = current_time.time()
+        
+        start_time = datetime.strptime(work_schedule['start_time'], '%H:%M').time()
+        end_time = datetime.strptime(work_schedule['end_time'], '%H:%M').time()
+        
+        return start_time <= current_time_only <= end_time
+    
+    @staticmethod
+    def is_break_time(current_time, work_schedule):
+        """Проверяет, находится ли текущее время в обеденном перерыве"""
+        current_time_only = current_time.time()
+        
+        breaks = work_schedule.get('breaks', [])
+        for break_info in breaks:
+            break_start = datetime.strptime(break_info['start'], '%H:%M').time()
+            break_duration = break_info['duration_minutes']
+            
+            # Вычисляем время окончания перерыва
+            break_start_dt = datetime.combine(current_time.date(), break_start)
+            break_end_dt = break_start_dt + timedelta(minutes=break_duration)
+            break_end = break_end_dt.time()
+            
+            if break_start <= current_time_only <= break_end:
+                return True
+        
+        return False
+    
+    @staticmethod
+    def get_break_end_time(current_time, work_schedule):
+        """Возвращает время окончания текущего перерыва"""
+        current_time_only = current_time.time()
+        
+        breaks = work_schedule.get('breaks', [])
+        for break_info in breaks:
+            break_start = datetime.strptime(break_info['start'], '%H:%M').time()
+            break_duration = break_info['duration_minutes']
+            
+            # Вычисляем время окончания перерыва
+            break_start_dt = datetime.combine(current_time.date(), break_start)
+            break_end_dt = break_start_dt + timedelta(minutes=break_duration)
+            break_end = break_end_dt.time()
+            
+            # Проверяем, находимся ли мы в этом перерыве
+            if break_start <= current_time_only <= break_end:
+                return break_end_dt
+        
+        return None
+
+class EnhancedActivityAgent:
+    """Улучшенный агент активности с поддержкой плагинов и heartbeat"""
+    
+    def __init__(self, config):
+        self.config = config
+        self.current_app = None
+        self.current_plugin = None
+        self.app_start_time = None
+        self.session_duration = random.randint(300, 900)
+        self.utils = ActivityUtils()
+        self.custom_commands = config.get('custom_commands', {})
+        
+        # Инициализация менеджера плагинов
+        self.plugin_manager = None
+        self.plugins_enabled = config.get('plugin_support', {}).get('enabled', True)
+        
+        if self.plugins_enabled and PluginManager:
+            plugins_dir = config.get('plugin_support', {}).get('plugins_directory', PLUGIN_DIR)
+            self.plugin_manager = PluginManager(plugins_dir)
+            self.plugin_manager.scan_and_load_plugins()
+            logging.info(f"Plugin manager initialized with {len(self.plugin_manager.get_all_plugins())} plugins")
+        else:
+            logging.info("Plugin support disabled or not available, using legacy mode")
+        
+        # Инициализация менеджера heartbeat
+        self.heartbeat_manager = HeartbeatManager(config, self)
+    
+    def run_command(self, command):
+        """Выполняет команду и логирует результат"""
+        start_time = time.time()
+        try:
+            result = subprocess.run(command, shell=True, capture_output=True, text=True)
+            duration = time.time() - start_time
+            if result.returncode == 0:
+                logging.debug(f"SUCCESS: {command} (duration: {duration:.2f}s)")
+            else:
+                logging.warning(f"COMMAND FAILED: {command} - {result.stderr}")
+        except Exception as e:
+            duration = time.time() - start_time
+            logging.error(f"ERROR: {command} (duration: {duration:.2f}s) - {e}")
+    
+    def get_available_applications(self):
+        """Возвращает список доступных приложений (плагины + встроенные)"""
+        apps = []
+        
+        # Добавляем приложения из плагинов
+        if self.plugin_manager:
+            apps.extend(self.plugin_manager.get_available_apps())
+        
+        # Добавляем встроенные приложения если включен fallback
+        fallback_enabled = self.config.get('plugin_support', {}).get('fallback_to_builtin', True)
+        if fallback_enabled:
+            builtin_apps = self.config.get('applications_used', [])
+            for app in builtin_apps:
+                if app not in apps:
+                    apps.append(app)
+        
+        return apps
+    
+    def open_application(self, app_name):
+        """Открывает приложение (плагин или встроенное)"""
+        # Сначала пытаемся использовать плагин
+        if self.plugin_manager:
+            plugin = self.plugin_manager.get_plugin(app_name)
+            if plugin:
+                logging.info(f"Opening {app_name} using plugin")
+                success = plugin.open_application()
+                if success:
+                    self.current_app = app_name
+                    self.current_plugin = plugin
+                    self.app_start_time = time.time()
+                    return True
+        
+        # Fallback к встроенному способу
+        commands = self.utils.get_application_commands(app_name, self.custom_commands)
+        if commands and 'open' in commands:
+            logging.info(f"Opening {app_name} using legacy method")
+            self.run_command(commands['open'])
+            self.current_app = app_name
+            self.current_plugin = None
+            self.app_start_time = time.time()
+            return True
+        
+        logging.warning(f"No way to open application: {app_name}")
+        return False
+    
+    def close_application(self, app_name):
+        """Закрывает приложение"""
+        # Используем плагин если доступен
+        if self.current_plugin:
+            logging.info(f"Closing {app_name} using plugin")
+            self.current_plugin.close_application()
+        else:
+            # Fallback к встроенному способу
+            commands = self.utils.get_application_commands(app_name, self.custom_commands)
+            if commands and 'close' in commands:
+                logging.info(f"Closing {app_name} using legacy method")
+                self.run_command(commands['close'])
+        
+        self.current_app = None
+        self.current_plugin = None
+        self.app_start_time = None
+    
+    def simulate_activity(self, app_name):
+        """Эмулирует активность в приложении"""
+        # Используем плагин если доступен
+        if self.current_plugin:
+            return self.current_plugin.execute_activity()
+        
+        # Fallback к встроенному способу
+        commands = self.utils.get_application_commands(app_name, self.custom_commands)
+        if commands and 'activities' in commands:
+            activity = random.choice(commands['activities'])
+            logging.info(f"Simulating legacy activity in {app_name}: {activity['description']}")
+            
+            for cmd in activity['commands']:
+                self.run_command(cmd)
+                time.sleep(random.uniform(1, 3))
+            return True
+        
+        return False
+    
+    def should_switch_app(self):
+        """Определяет, нужно ли переключиться на другое приложение"""
+        if not self.current_app or not self.app_start_time:
+            return True
+        
+        # Используем логику плагина если доступна
+        if self.current_plugin:
+            return not self.current_plugin.should_continue_session()
+        
+        # Fallback к базовой логике
+        elapsed = time.time() - self.app_start_time
+        return elapsed >= self.session_duration
+    
+    def get_next_app(self):
+        """Выбирает следующее приложение для работы"""
+        available_apps = self.get_available_applications()
+        if not available_apps:
+            return None
+        
+        # Фильтруем приложения по времени работы
+        current_time = datetime.now()
+        is_work_time = self.utils.is_work_time(current_time, self.config['work_schedule'])
+        is_break_time = self.utils.is_break_time(current_time, self.config['work_schedule'])
+        
+        suitable_apps = []
+        for app_name in available_apps:
+            if app_name == self.current_app:
+                continue  # Исключаем текущее приложение
+            
+            # Проверяем через плагин если доступен
+            if self.plugin_manager:
+                plugin = self.plugin_manager.get_plugin(app_name)
+                if plugin:
+                    # Проверяем настройки времени работы плагина
+                    if is_work_time and plugin.can_use_during_work_hours():
+                        suitable_apps.append((app_name, plugin.get_usage_probability()))
+                    elif is_break_time and plugin.can_use_during_break():
+                        suitable_apps.append((app_name, plugin.get_usage_probability()))
+                    continue
+            
+            # Fallback: все приложения подходят
+            suitable_apps.append((app_name, 0.5))
+        
+        if not suitable_apps:
+            suitable_apps = [(app, 0.5) for app in available_apps if app != self.current_app]
+        
+        if not suitable_apps:
+            return None
+        
+        # Выбираем с учетом вероятностей
+        total_probability = sum(prob for _, prob in suitable_apps)
+        if total_probability == 0:
+            return random.choice([app for app, _ in suitable_apps])
+        
+        rand_val = random.random() * total_probability
+        cumulative = 0
+        for app_name, probability in suitable_apps:
+            cumulative += probability
+            if rand_val <= cumulative:
+                return app_name
+        
+        return suitable_apps[-1][0]  # Fallback
+    
+    def get_system_statistics(self):
+        """Возвращает статистику работы системы"""
+        stats = {
+            'agent_uptime': time.time() - getattr(self, 'start_time', time.time()),
+            'current_app': self.current_app,
+            'plugin_mode': self.current_plugin is not None,
+            'total_plugins': len(self.plugin_manager.get_all_plugins()) if self.plugin_manager else 0,
+            'available_apps': len(self.get_available_applications())
+        }
+        
+        if self.current_plugin:
+            plugin_stats = getattr(self.current_plugin, 'get_session_statistics', lambda: {})()
+            stats.update({'current_plugin_stats': plugin_stats})
+        
+        return stats
+    
+    def run(self):
+        """Основной цикл работы агента"""
+        self.start_time = time.time()
+        
+        logging.info(f"Starting Enhanced Activity Agent for user: {self.config.get('username', 'unknown')}")
+        logging.info(f"Role: {self.config.get('role', 'unknown')}")
+        logging.info(f"Work schedule: {self.config.get('work_schedule', {})}")
+        logging.info(f"Available applications: {self.get_available_applications()}")
+        logging.info(f"Plugin support: {'enabled' if self.plugins_enabled else 'disabled'}")
+        logging.info(f"Heartbeat: {'enabled' if HEARTBEAT_CONFIG.get('enabled', True) else 'disabled'}")
+        
+        # Запускаем heartbeat manager
+        self.heartbeat_manager.start()
+        
+        try:
+            while True:
+                current_time = datetime.now()
+                
+                # Проверяем, рабочее ли время
+                if not self.utils.is_work_time(current_time, self.config['work_schedule']):
+                    if self.current_app:
+                        logging.info("Work time ended, closing current application")
+                        self.close_application(self.current_app)
+                    
+                    logging.info("Outside work hours, sleeping...")
+                    time.sleep(300)
+                    continue
+                
+                # Проверяем, не время ли перерыва
+                if self.utils.is_break_time(current_time, self.config['work_schedule']):
+                    # Во время перерыва ВСЯ активность прекращается
+                    if self.current_app:
+                        logging.info("Break time started, closing current application")
+                        self.close_application(self.current_app)
+                    
+                    # Рассчитываем время окончания перерыва
+                    break_end_time = self.utils.get_break_end_time(current_time, self.config['work_schedule'])
+                    if break_end_time:
+                        time_until_break_ends = (break_end_time - current_time).total_seconds()
+                        if time_until_break_ends > 0:
+                            logging.info(f"Break time - sleeping for {int(time_until_break_ends/60)} minutes until {break_end_time.strftime('%H:%M')}")
+                            time.sleep(min(time_until_break_ends, 300))  # Максимум 5 минут за раз
+                        continue
+                    else:
+                        # Fallback: спим 5 минут если не удалось рассчитать
+                        logging.info("Break time - no activity allowed, sleeping...")
+                        time.sleep(300)
+                        continue
+                
+                # Определяем, нужно ли переключить приложение
+                if self.should_switch_app():
+                    # Закрываем текущее приложение
+                    if self.current_app:
+                        self.close_application(self.current_app)
+                    
+                    # Пауза между приложениями
+                    pause_time = random.randint(30, 120)
+                    logging.info(f"Pausing for {pause_time} seconds between applications")
+                    time.sleep(pause_time)
+                    
+                    # Открываем новое приложение
+                    next_app = self.get_next_app()
+                    if next_app and self.open_application(next_app):
+                        self.session_duration = random.randint(300, 900)
+                        time.sleep(5)  # Даем время приложению запуститься
+                
+                # Эмулируем активность в текущем приложении
+                if self.current_app:
+                    self.simulate_activity(self.current_app)
+                
+                # Пауза между активностями
+                activity_pause = random.randint(10, 60)
+                time.sleep(activity_pause)
+                
+                # Периодически выводим статистику
+                if hasattr(self, 'last_stats_time'):
+                    if time.time() - self.last_stats_time > 3600:  # Каждый час
+                        stats = self.get_system_statistics()
+                        logging.info(f"System statistics: {stats}")
+                        self.last_stats_time = time.time()
+                else:
+                    self.last_stats_time = time.time()
+                    
+        except KeyboardInterrupt:
+            logging.info("Agent stopped by user")
+            if self.current_app:
+                self.close_application(self.current_app)
+            # Останавливаем heartbeat manager
+            self.heartbeat_manager.stop()
+        except Exception as e:
+            logging.error(f"Agent crashed: {e}")
+            if self.current_app:
+                self.close_application(self.current_app)
+            # Останавливаем heartbeat manager
+            self.heartbeat_manager.stop()
+            raise
+
+def create_service_file():
+    """Создает файл сервиса для systemd"""
+    service_content = """[Unit]
+Description=Enhanced Linux Activity Agent with Plugin Support
+After=network.target graphical-session.target
+Wants=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/activity_agent --daemon
+WorkingDirectory=/opt/linux_agent
+Restart=always
+RestartSec=10
+User=root
+Group=root
+
+# Переменные окружения для GUI приложений
+Environment=DISPLAY=:0
+Environment=XAUTHORITY=/home/user/.Xauthority
+Environment=PYTHONPATH=/opt/linux_agent/plugins
+
+# Логирование
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=activity-agent
+
+# Ограничения ресурсов
+MemoryMax=512M
+CPUQuota=50%
+
+[Install]
+WantedBy=multi-user.target
+"""
+    
+    try:
+        with open('/etc/systemd/system/activity-agent.service', 'w') as f:
+            f.write(service_content)
+        logging.info("Service file created successfully")
+        return True
+    except Exception as e:
+        logging.error(f"Failed to create service file: {e}")
+        return False
+
+def install_plugin_system():
+    """Устанавливает систему плагинов"""
+    try:
+        # Создаем структуру директорий для плагинов
+        plugin_base_dir = Path("/opt/linux_agent/plugins")
+        plugin_base_dir.mkdir(parents=True, exist_ok=True)
+        
+        configs_dir = plugin_base_dir / "configs"
+        scripts_dir = plugin_base_dir / "scripts"
+        configs_dir.mkdir(exist_ok=True)
+        scripts_dir.mkdir(exist_ok=True)
+        
+        logging.info(f"Plugin directories created: {plugin_base_dir}")
+        
+        # Создаем файл __init__.py для Python пакета
+        init_file = plugin_base_dir / "__init__.py"
+        init_file.write_text("# Plugin package for Linux Activity Agent\n")
+        
+        # Копируем plugin_manager.py если он не существует
+        plugin_manager_file = plugin_base_dir / "plugin_manager.py"
+        if not plugin_manager_file.exists():
+            # Здесь должен быть код для копирования plugin_manager.py
+            logging.info("plugin_manager.py should be placed in the plugins directory")
+        
+        # Создаем пример конфигурации для VS Code
+        vscode_config = {
+            "app_info": {
+                "name": "Visual Studio Code",
+                "display_name": "VS Code",
+                "category": "development",
+                "description": "Visual Studio Code editor",
+                "version": "1.0.0",
+                "author": "System",
+                "tags": ["editor", "development", "coding"]
+            },
+      
+            "execution": {
+                "open_command": "/usr/bin/code --no-sandbox --user-data-dir=/tmp/vscode-root",
+                "close_command": "pkill -f code",
+                "startup_delay": 3
+            },
+            "activities": [
+        {
+            "id": "open_file",
+            "name": "Open File",
+            "description": "Opens a Python file",
+            "weight": 30,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+o", "delay": 0.5},
+                {"type": "type_text", "text": "main.py", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 1}
+            ]
+        },
+        {
+            "id": "type_code",
+            "name": "Type Code",
+            "description": "Types a simple print statement",
+            "weight": 40,
+            "commands": [
+                {"type": "type_text", "text": "print('Hello World')", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.3},
+                {"type": "key_combination", "keys": "ctrl+s", "delay": 0.5}
+            ]
+        },
+        {
+            "id": "create_new_file",
+            "name": "Create New File",
+            "description": "Creates a new Python file with imports",
+            "weight": 25,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+n", "delay": 0.5},
+                {"type": "type_text", "text": "# New Python Script", "delay": 0.3},
+                {"type": "key", "key": "Return Return", "delay": 0.3},
+                {"type": "type_text", "text": "import os", "delay": 0.3},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "import sys", "delay": 0.3},
+                {"type": "key", "key": "Return", "delay": 0.2}
+            ]
+        },
+        {
+            "id": "use_terminal",
+            "name": "Use Terminal",
+            "description": "Opens integrated terminal and checks Python version",
+            "weight": 20,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+grave", "delay": 0.8},
+                {"type": "type_text", "text": "python --version", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 1},
+                {"type": "key_combination", "keys": "ctrl+grave", "delay": 0.5}
+            ]
+        },
+        {
+            "id": "search_files",
+            "name": "Search in Files",
+            "description": "Searches for TODO comments in project",
+            "weight": 15,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+shift+f", "delay": 0.5},
+                {"type": "type_text", "text": "TODO", "delay": 0.5},
+                {"type": "wait", "time": 0.8},
+                {"type": "key", "key": "Escape", "delay": 0.3}
+            ]
+        },
+        {
+            "id": "goto_line",
+            "name": "Go to Line",
+            "description": "Navigates to specific line number",
+            "weight": 10,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+g", "delay": 0.5},
+                {"type": "type_text", "text": "10", "delay": 0.3},
+                {"type": "key", "key": "Return", "delay": 0.5}
+            ]
+        },
+        {
+            "id": "comment_code",
+            "name": "Comment Code",
+            "description": "Adds a function and toggles comments",
+            "weight": 25,
+            "commands": [
+                {"type": "type_text", "text": "def hello_world():", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "    print('Hello')", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "key", "key": "Up", "delay": 0.2},
+                {"type": "key_combination", "keys": "ctrl+slash", "delay": 0.5},
+                {"type": "wait", "time": 0.3},
+                {"type": "key_combination", "keys": "ctrl+slash", "delay": 0.5}
+            ]
+        },
+        {
+            "id": "split_editor",
+            "name": "Split Editor",
+            "description": "Splits editor view and switches between panes",
+            "weight": 10,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+backslash", "delay": 0.5},
+                {"type": "wait", "time": 0.5},
+                {"type": "key_combination", "keys": "ctrl+1", "delay": 0.3},
+                {"type": "key_combination", "keys": "ctrl+2", "delay": 0.3},
+                {"type": "key_combination", "keys": "ctrl+1", "delay": 0.3}
+            ]
+        },
+        {
+            "id": "quick_open",
+            "name": "Quick Open",
+            "description": "Uses quick open to search for config files",
+            "weight": 20,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+p", "delay": 0.5},
+                {"type": "type_text", "text": "config", "delay": 0.5},
+                {"type": "wait", "time": 0.8},
+                {"type": "key", "key": "Escape", "delay": 0.3}
+            ]
+        },
+        {
+            "id": "command_palette",
+            "name": "Command Palette",
+            "description": "Opens command palette and searches for theme",
+            "weight": 15,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+shift+p", "delay": 0.5},
+                {"type": "type_text", "text": "theme", "delay": 0.5},
+                {"type": "wait", "time": 0.8},
+                {"type": "key", "key": "Escape", "delay": 0.3}
+            ]
+        },
+        {
+            "id": "multi_cursor",
+            "name": "Multiple Cursors",
+            "description": "Uses multiple cursors to edit multiple lines",
+            "weight": 15,
+            "commands": [
+                {"type": "type_text", "text": "variable1 = 10", "delay": 0.3},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "variable2 = 20", "delay": 0.3},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "variable3 = 30", "delay": 0.3},
+                {"type": "key_combination", "keys": "ctrl+a", "delay": 0.3},
+                {"type": "key_combination", "keys": "alt+shift+i", "delay": 0.5},
+                {"type": "key", "key": "End", "delay": 0.2},
+                {"type": "type_text", "text": " # added", "delay": 0.5},
+                {"type": "key", "key": "Escape", "delay": 0.3}
+            ]
+        },
+        {
+            "id": "find_replace",
+            "name": "Find and Replace",
+            "description": "Opens find and replace dialog",
+            "weight": 15,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+h", "delay": 0.5},
+                {"type": "type_text", "text": "print", "delay": 0.3},
+                {"type": "key", "key": "Tab", "delay": 0.2},
+                {"type": "type_text", "text": "logger.info", "delay": 0.5},
+                {"type": "wait", "time": 0.5},
+                {"type": "key", "key": "Escape", "delay": 0.3}
+            ]
+        },
+        {
+            "id": "toggle_sidebar",
+            "name": "Toggle Sidebar",
+            "description": "Shows and hides the sidebar",
+            "weight": 10,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+b", "delay": 0.5},
+                {"type": "wait", "time": 0.8},
+                {"type": "key_combination", "keys": "ctrl+b", "delay": 0.5}
+            ]
+        },
+        {
+            "id": "format_document",
+            "name": "Format Document",
+            "description": "Formats messy code",
+            "weight": 20,
+            "commands": [
+                {"type": "type_text", "text": "def messy_function(  x,y ,z  ):", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "return x+y+z", "delay": 0.5},
+                {"type": "key_combination", "keys": "ctrl+a", "delay": 0.3},
+                {"type": "key_combination", "keys": "shift+alt+f", "delay": 0.5}
+            ]
+        },
+        {
+            "id": "navigate_tabs",
+            "name": "Navigate Tabs",
+            "description": "Switches between open tabs",
+            "weight": 25,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+Tab", "delay": 0.5},
+                {"type": "wait", "time": 0.3},
+                {"type": "key_combination", "keys": "ctrl+Tab", "delay": 0.5},
+                {"type": "wait", "time": 0.3},
+                {"type": "key_combination", "keys": "ctrl+shift+Tab", "delay": 0.5}
+            ]
+        },
+        {
+            "id": "create_function",
+            "name": "Create Function",
+            "description": "Creates a complete function with docstring",
+            "weight": 30,
+            "commands": [
+                {"type": "type_text", "text": "def calculate_sum(numbers):", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "    '''Calculate sum of numbers'''", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "    total = 0", "delay": 0.3},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "    for num in numbers:", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "        total += num", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "    return total", "delay": 0.5},
+                {"type": "key", "key": "Return Return", "delay": 0.3}
+            ]
+        },
+        {
+            "id": "add_imports",
+            "name": "Add Import Statements",
+            "description": "Adds common import statements at the top",
+            "weight": 20,
+            "commands": [
+                {"type": "key_combination", "keys": "ctrl+Home", "delay": 0.5},
+                {"type": "type_text", "text": "import json", "delay": 0.3},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "import requests", "delay": 0.3},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "from datetime import datetime", "delay": 0.5},
+                {"type": "key", "key": "Return Return", "delay": 0.3}
+            ]
+        },
+        {
+            "id": "debug_code",
+            "name": "Debug Code",
+            "description": "Adds debug print statements",
+            "weight": 15,
+            "commands": [
+                {"type": "type_text", "text": "x = 42", "delay": 0.3},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "print(f'Debug: x = {x}')", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "# TODO: Remove debug print", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2}
+            ]
+        },
+        {
+            "id": "create_class",
+            "name": "Create Class",
+            "description": "Creates a simple Python class",
+            "weight": 20,
+            "commands": [
+                {"type": "type_text", "text": "class DataProcessor:", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "    def __init__(self):", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "        self.data = []", "delay": 0.5},
+                {"type": "key", "key": "Return Return", "delay": 0.3},
+                {"type": "type_text", "text": "    def process(self):", "delay": 0.5},
+                {"type": "key", "key": "Return", "delay": 0.2},
+                {"type": "type_text", "text": "        pass", "delay": 0.3},
+                {"type": "key", "key": "Return", "delay": 0.2}
+            ]
+        }
+    ],
+            "settings": {
+                "session_duration": {"min": 300, "max": 1800},
+                "usage_probability": 0.8
+            }
+        }
+        
+        vscode_config_file = configs_dir / "vscode.json"
+        with open(vscode_config_file, 'w', encoding='utf-8') as f:
+            json.dump(vscode_config, f, indent=2, ensure_ascii=False)
+        
+        logging.info("VS Code plugin configuration created")
+        
+        return True
+        
+    except Exception as e:
+        logging.error(f"Failed to install plugin system: {e}")
+        return False
+
+def setup_autostart():
+    """Настраивает автозапуск агента"""
+    try:
+        # Создаем рабочую директорию
+        work_dir = '/opt/linux_agent'
+        os.makedirs(work_dir, exist_ok=True)
+        
+        # Устанавливаем систему плагинов
+        install_plugin_system()
+        
+        # Копируем исполняемый файл в системную директорию
+        current_path = os.path.abspath(sys.argv[0])
+        target_path = '/usr/local/bin/activity_agent'
+        
+        if current_path != target_path:
+            shutil.copy2(current_path, target_path)
+            os.chmod(target_path, 0o755)
+            logging.info(f"Agent copied to {target_path}")
+        
+        # Также копируем в рабочую директорию
+        work_agent_path = os.path.join(work_dir, 'activity_agent')
+        if current_path != work_agent_path:
+            shutil.copy2(current_path, work_agent_path)
+            os.chmod(work_agent_path, 0o755)
+            logging.info(f"Agent also copied to {work_agent_path}")
+        
+        # Создаем файл сервиса
+        if create_service_file():
+            # Перезагружаем systemd и включаем сервис
+            subprocess.run(['systemctl', 'daemon-reload'], check=True)
+            subprocess.run(['systemctl', 'enable', 'activity-agent.service'], check=True)
+            logging.info("Service enabled for autostart")
+            return True
+        
+    except Exception as e:
+        logging.error(f"Failed to setup autostart: {e}")
+        return False
+
+def install_dependencies():
+    """Устанавливает базовые зависимости"""
+    dependencies = ["xdotool", "python3-pip"]
+    
+    try:
+        # Обновляем пакеты
+        subprocess.run(['apt', 'update'], check=True)
+        
+        # Устанавливаем зависимости
+        for dep in dependencies:
+            logging.info(f"Installing {dep}...")
+            result = subprocess.run(['apt', 'install', '-y', dep], capture_output=True, text=True)
+            if result.returncode != 0:
+                logging.warning(f"Failed to install {dep}: {result.stderr}")
+        
+        logging.info("Dependencies installation completed")
+        return True
+        
+    except Exception as e:
+        logging.error(f"Failed to install dependencies: {e}")
+        return False
+
+def main():
+    """Главная функция"""
+    setup_logging()
+    logging.info("Starting Enhanced Unified Linux Activity Agent")
+    
+    # Проверяем аргументы командной строки
+    if len(sys.argv) > 1:
+        if sys.argv[1] == '--install':
+            # Режим установки
+            logging.info("Installation mode activated")
+            
+            if os.geteuid() != 0:
+                logging.error("Root privileges required for installation")
+                sys.exit(1)
+            
+            # Устанавливаем зависимости
+            install_dependencies()
+            
+            # Настраиваем автозапуск
+            setup_autostart()
+            
+            logging.info("Installation completed. You can now:")
+            logging.info("1. Add plugin configurations to /opt/linux_agent/plugins/configs/")
+            logging.info("2. Start the agent: sudo systemctl start activity-agent")
+            logging.info("3. Check status: sudo systemctl status activity-agent")
+            return
+            
+        elif sys.argv[1] == '--daemon':
+            # Режим демона
+            logging.info("Daemon mode activated")
+            
+        elif sys.argv[1] == '--create-plugin':
+            # Создание шаблона плагина
+            if len(sys.argv) < 3:
+                print("Usage: activity_agent --create-plugin <app_name>")
+                sys.exit(1)
+            
+            app_name = sys.argv[2]
+            if PluginManager:
+                manager = PluginManager()
+                template_path = manager.create_plugin_template(app_name)
+                if template_path:
+                    print(f"Plugin template created: {template_path}")
+                    print("Edit the configuration file and restart the agent.")
+                else:
+                    print("Failed to create plugin template")
+            return
+            
+        elif sys.argv[1] == '--list-plugins':
+            # Список плагинов
+            if PluginManager:
+                manager = PluginManager()
+                manager.scan_and_load_plugins()
+                plugins = manager.get_all_plugins()
+                if plugins:
+                    print("Available plugins:")
+                    for name, plugin in plugins.items():
+                        print(f"  - {name}: {plugin.app_info.get('description', 'No description')}")
+                else:
+                    print("No plugins found")
+            return
+            
+        elif sys.argv[1] == '--help':
+            print("Enhanced Linux Activity Agent")
+            print("Usage:")
+            print("  activity_agent --install              Install the agent")
+            print("  activity_agent --daemon               Run as daemon")
+            print("  activity_agent --create-plugin <name> Create plugin template")
+            print("  activity_agent --list-plugins         List available plugins")
+            print("  activity_agent --help                 Show this help")
+            return
+    
+    # Загружаем конфигурацию
+    config_manager = ConfigManager()
+    config = config_manager.load_config()
+    
+    # Создаем и запускаем агента
+    agent = EnhancedActivityAgent(config)
+    
+    try:
+        agent.run()
+    except KeyboardInterrupt:
+        logging.info("Agent stopped by user")
+        if agent.current_app:
+            agent.close_application(agent.current_app)
+    except Exception as e:
+        logging.error(f"Agent crashed: {e}")
+        if agent.current_app:
+            agent.close_application(agent.current_app)
+
+if __name__ == "__main__":
+    main()
