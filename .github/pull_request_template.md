@@ -1,7 +1,7 @@
 # Database-Driven Linux Agent System
 
 ## Linked Issue
-**This PR addresses:** Closes #15
+**This PR addresses:** Closes #7
 
 ## Description
 Complete rewrite of Linux agent system to use PostgreSQL database for 
