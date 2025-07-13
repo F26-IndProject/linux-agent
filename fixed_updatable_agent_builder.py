@@ -24,7 +24,7 @@ DATABASE_CONFIG = {
     "port": 5432,
     "database": "lisa_dev",
     "user": "lisa",
-    "password": "123"
+    "password": "pass"
 }
 
 # Настройки сборки
