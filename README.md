@@ -37,16 +37,9 @@ pip3 install psycopg2-binary psutil nuitka
 ### 2. Setup Database
 
 ```bash
-# Create database and user
-sudo -u postgres psql << EOF
-CREATE DATABASE lisa_dev;
-CREATE USER lisa WITH PASSWORD 'lisa_password_2024';
-GRANT ALL PRIVILEGES ON DATABASE lisa_dev TO lisa;
-EOF
-
-# Create tables (see setup/create_tables.sql)
-psql -h localhost -U lisa -d lisa_dev < setup/create_tables.sql
-```
+# Connect database
+psql -h localhost -U lisa -d lisa_dev
+password: pass
 
 ### 3. Deploy Agent
 
