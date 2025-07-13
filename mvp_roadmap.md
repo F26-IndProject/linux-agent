@@ -102,6 +102,6 @@ Provide a demonstration infrastructure simulating peaceful activity, ready for i
 
 ## Current Status
 
--  **Milestone:** MVP V2 completed
+-  **Milestone:** MVP V2.5 — Feedback Integration and Enhanced Simulation
 -  **Next Target:** MVP V3 — Completed Demonstration Product
 -  **Estimated Timeline:** 1–2 weeks
