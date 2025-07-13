@@ -304,18 +304,3 @@ UPDATE behavior_templates SET template_data = jsonb_set(
 3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Support
-
-- Issues: https://github.com/yourusername/linux-activity-agent/issues
-- Wiki: https://github.com/yourusername/linux-activity-agent/wiki
-
-## Acknowledgments
-
-- Built with Python, PostgreSQL, and love
-- Uses Nuitka for binary compilation
-- Inspired by real-world automation needs
