@@ -60,7 +60,21 @@ Demonstrate realistic behavior and the start of live activity.
 
 
 ---
+## MVP V2.5 — Enhanced Simulation & Feedback Integration
 
+### Planned Features:
+- Full behavior logging from agents
+- Feedback loop from agent behavior to template improvement
+- Web interface enhancements:
+  - Real-time activity display
+  - Feedback submission form
+- Support for multiple templates per role
+- Export logs and simulation data (CSV/JSON)
+
+### Goal:
+Refine the simulation based on feedback and prepare for full scenario integration.
+
+---
 ##  MVP V3 — Completed Demonstration Product (Next Step)
 
 ### Goal:
