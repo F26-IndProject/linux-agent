@@ -36,7 +36,7 @@ DATABASE_CONFIG = {
     "port": 5432,
     "database": "lisa_dev",
     "user": "lisa",
-    "password": "lisa_password_2024"
+    "password": "pass"
 }
 
 # Конфигурация мьютексов и обновлений
