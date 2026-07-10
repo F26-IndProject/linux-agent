@@ -271,3 +271,5 @@ ps -o pid,ppid,comm -p <PID_FROM_LSOF>
 repeate the command until you see the parent process concerning log writer
 
 Parent for all processes started by the agent will be the systemd
+
+NOTE (optional): You can add more images and pdf documents in the linux-agent/dist/attachments directory
