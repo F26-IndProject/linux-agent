@@ -1,0 +1,55 @@
+# LISA Linux Agent — Office Worker Role
+# ========================================
+activities:
+  - action: open_browser
+    weight: 3
+    urls:
+      - "https://www.google.com"
+      - "https://www.wikipedia.org"
+      - "https://news.ycombinator.com"
+      - "https://www.reddit.com"
+      - "https://stackoverflow.com"
+
+  - action: word_document
+    weight: 2
+
+  - action: excel_spreadsheet
+    weight: 2
+
+  - action: read_email
+    weight: 2
+
+  - action: send_email
+    recipients:
+      - "lisalinux@lisa.local"
+      - "lisawindows@lisa.local"
+      - "lisaserver@lisa.local"
+    weight: 2
+
+  - action: open_text_editor
+    weight: 2
+
+  - action: terminal_commands
+    commands:
+      - "ls -la ~/Documents"
+      - "df -h"
+      - "uptime"
+      - "whoami"
+      - "cat /etc/hostname"
+    weight: 1
+
+  - action: create_file
+    path: "~/Documents/notes.txt"
+    content: "Quick notes from today. Follow up needed on Q3 deliverables."
+    weight: 1
+
+  # server loaded from .env
+  - action: smb_access
+    share: "share"
+    smb_action: "browse"
+    weight: 2
+
+  # ── Idle ──────────────────────────────────────────────────────────
+  - action: sleep
+    seconds: 240
+    weight: 2

@@ -1,0 +1,8 @@
+role: user
+
+work_days: [1, 2, 3, 4, 5]
+work_start: "09:00"
+work_end: "18:00"
+
+activity_interval_min: 30
+activity_interval_max: 50

@@ -1,0 +1,60 @@
+# LISA Linux Agent — System Administrator Role
+# ================================================
+activities:
+
+  - action: terminal_commands
+    commands:
+      - "ps aux | head -20"
+      - "df -h"
+      - "free -m"
+      - "uptime"
+      - "last -10"
+      - "netstat -tulnp 2>/dev/null || ss -tulnp"
+      - "journalctl --no-pager -n 20"
+      - "top -bn1 | head -15"
+      - "cat /var/log/syslog | tail -20"
+      - "systemctl status sshd"
+    weight: 4
+
+  - action: manage_cron
+    jobs:
+      - name: "backup-logs"
+        schedule: "0 2 * * *"
+        command: "tar czf /tmp/logs-backup-$(date +%F).tar.gz /var/log/lisa-agent/"
+    weight: 1
+
+  # server loaded from .env
+  - action: smb_access
+    share: "share"
+    smb_action: "browse"
+    weight: 2
+
+  - action: open_browser
+    urls:
+      - "https://www.google.com"
+      - "https://grafana.local"
+      - "https://kibana.local"
+    weight: 2
+
+  - action: read_email
+    weight: 2
+
+  - action: send_email
+    recipients:
+      - "lisalinux@lisa.local"
+      - "lisawindows@lisa.local"
+      - "lisaserver@lisa.local"
+    weight: 1
+
+  - action: word_document
+    weight: 1
+
+  - action: create_file
+    path: "~/Documents/admin-report.txt"
+    content: "System health report"
+    weight: 1
+
+  # ── Idle ──────────────────────────────────────────────────────────
+  - action: sleep
+    seconds: 240
+    weight: 2

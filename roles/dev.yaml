@@ -1,0 +1,72 @@
+# LISA Linux Agent — Developer Role
+# ====================================
+# Simulates a Linux developer:
+# - Uses a text editor for coding
+# - Runs bash and git commands
+# - Browses developer resources
+# - Works with LibreOffice for documentation
+# - Accesses SMB shares
+# - Sends and reads email
+
+activities:
+
+  # ── Text editor ────────────────────────────────────────────────────
+  - action: open_text_editor
+    weight: 3
+
+  # ── Terminal — developer commands ────────────────────────────────
+  - action: terminal_commands
+    commands:
+      - "git status"
+      - "git log --oneline -5"
+      - "python3 --version"
+      - "pip list | head -15"
+      - "docker ps 2>/dev/null || echo 'docker not running'"
+      - "cat /proc/cpuinfo | head -10"
+      - "ls -la ~/projects/ 2>/dev/null || ls -la ~/"
+      - "grep -r 'TODO' ~/projects/ 2>/dev/null | head -5"
+    weight: 4
+
+  # ── Web browsing ───────────────────────────────────────────────────
+  - action: open_browser
+    urls:
+      - "https://github.com"
+      - "https://stackoverflow.com"
+      - "https://docs.python.org"
+      - "https://developer.mozilla.org"
+    weight: 3
+
+  # ── LibreOffice for documentation ───────────────────────────────────
+  - action: word_document
+    weight: 1
+
+  - action: excel_spreadsheet
+    weight: 1
+
+  # ── SMB share ─────────────────────────────────────────────────────
+  # server loaded from .env
+  - action: smb_access
+    share: "share"
+    smb_action: "browse"
+    weight: 2
+
+  # ── Email ─────────────────────────────────────────────────────────
+  - action: read_email
+    weight: 2
+
+  - action: send_email
+    recipients:
+      - "lisalinux@lisa.local"
+      - "lisawindows@lisa.local"
+      - "lisaserver@lisa.local"
+    weight: 2
+
+  - action: create_file
+    path: "~/Documents/dev-notes.txt"
+    content: "Development notes"
+    weight: 2
+
+  # ── Idle ──────────────────────────────────────────────────────────
+  - action: sleep
+    seconds: 240
+    weight: 2

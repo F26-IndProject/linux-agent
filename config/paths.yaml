@@ -1,0 +1,4 @@
+documents: "~/Documents"
+downloads: "~/Downloads"
+desktop: "~/Desktop"
+temp: "/tmp/lisa-agent"
