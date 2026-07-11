@@ -287,8 +287,10 @@ def run_action(action, paths, settings):
         elif action_type == "edit_file":
             files.edit_file(path=action.get("path", "~/Documents/notes.txt"))
         elif action_type == "sleep":
-            secs = action.get("seconds", 60)
-            logger.info(f"Idle for {secs} seconds")
+            min_secs = action.get("min_seconds", 30)
+            max_secs = action.get("max_seconds", 120)
+            secs = random.randint(min_secs, max_secs)
+            logger.info(f"Idle for {secs} seconds (range: {min_secs}–{max_secs})")
             time.sleep(secs)
         else:
             logger.warning(f"Unknown action type: {action_type}")
@@ -383,8 +385,9 @@ def main():
         c = threading.Thread(target=cleanup.cleanup_loop, daemon=True)
         c.start()
         logger.info("Cleanup thread started — removes files older than 4 days every 24h")
-        interval_min = settings.get("activity_interval_min", 120)
-        interval_max = settings.get("activity_interval_max", 300)
+        # Default interval from settings.yaml — DB can override per agent
+        default_interval_min = settings.get("activity_interval_min", 120)
+        default_interval_max = settings.get("activity_interval_max", 300)
         was_idle    = False
         idle_reason = None
         while True:
@@ -404,6 +407,10 @@ def main():
                 activities = list(agent_role_state["activities"])
             activity = weighted_choice(activities)
             run_action(activity, paths, settings)
+            # Check DB for interval override — falls back to settings.yaml defaults
+            db_interval  = db.get_agent_interval(AGENT_ID)
+            interval_min = db_interval['interval_min'] if db_interval and db_interval.get('interval_min') else default_interval_min
+            interval_max = db_interval['interval_max'] if db_interval and db_interval.get('interval_max') else default_interval_max
             wait = random.randint(interval_min, interval_max)
             logger.info(f"Waiting {wait}s before next activity")
             time.sleep(wait)

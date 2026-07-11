@@ -226,6 +226,31 @@ class DatabaseManager:
             "DELETE FROM agent_deleted_crons WHERE agent_id = %s AND job_name = %s",
             (agent_id, job_name)
         )
+    def get_agent_interval(self, agent_id: str) -> Optional[Dict]:
+        """Return activity interval override for this agent, or None if not set."""
+        results = self._execute(
+            "SELECT activity_interval_min, activity_interval_max FROM agents WHERE agent_id = %s",
+            (agent_id,)
+        )
+        if not results:
+            return None
+        row = results[0]
+        if row['activity_interval_min'] is None and row['activity_interval_max'] is None:
+            return None
+        return {
+            'interval_min': row['activity_interval_min'],
+            'interval_max': row['activity_interval_max']
+        }
+    def set_agent_interval(self, agent_id: str, interval_min: int, interval_max: int):
+        """Set activity interval override for this agent."""
+        self._execute(
+            """
+            UPDATE agents
+            SET activity_interval_min = %s, activity_interval_max = %s
+            WHERE agent_id = %s
+            """,
+            (interval_min, interval_max, agent_id)
+        )
     def log_activity(self, agent_id: str, activity_type: str, activity_data: Dict[str, Any]):
         results = self._execute(
             "SELECT id FROM agents WHERE agent_id = %s",

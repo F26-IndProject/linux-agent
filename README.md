@@ -12,7 +12,7 @@ Before proceeding, ensure the following are in place:
 - Network connectivity to the LISA Server
 - Ubuntu 22.04 desktop with a graphical session
 - Python 3.10+
-- Agent email account already created on the LISA Server — [Adding a new email account on LISA Server](https://github.com/F26-IndProject/mailserver#part-5-adding-a-new-email-account)
+- Agent email account already created on the LISA Server — [Read Part 4 of the Mailsever Repo(Managing email accounts)](https://github.com/F26-IndProject/mailserver/)
 - VS Code installed
 
 Important! Follow all steps below in the order they are presented
@@ -48,8 +48,6 @@ For example:
 192.168.100.10  mail.lisa.local  lisa.local
 ```
 
-Reference: [Linux DNS Setup](https://github.com/F26-IndProject/mailserver#part-1-configuring-local-dns-records)
-
 ### SSL Configuration
 
 Python imaplib, smtplib, requests uses the system trust store
@@ -70,15 +68,13 @@ sudo cp mail.lisa.local.crt /usr/local/share/ca-certificates/mail.lisa.local.crt
 sudo update-ca-certificates
 ```
 
-Reference: [Distributing server certs to agents](https://github.com/F26-IndProject/mailserver#distribute-the-certificate-to-agents)
-
 ---
 
-## 3. Set Up Agent Email Account on the LISA Server
+## 3. Make sure Agent's Email Account is Created on the LISA Server
 
 You need to set up the agent's email account on the LISA Server before configuring Thunderbird.
 
-Follow this guide: [Adding a new email account on LISA Server](https://github.com/F26-IndProject/mailserver#part-5-adding-a-new-email-account)
+Follow this guide: [Read Part 4 of the Mailsever Repo(Managing email accounts)](https://github.com/F26-IndProject/mailserver/)
 
 ---
 
@@ -121,8 +117,6 @@ Also add the server certificate to Thunderbird's trust store (Very Important):
 certutil -A -n "mail.lisa.local" -t "CT,," -i mail.lisa.local.crt -d ~/.thunderbird/*.default-release
 ```
 
-Reference: [Thunderbird configuration guide](https://github.com/F26-IndProject/mailserver#thunderbird-ubuntu)
-
 ---
 
 ## 5. Configure Auto-Login and X11
@@ -143,7 +137,7 @@ AutomaticLogin=your_username
 WaylandEnable=false
 ```
 
-Keyring
+**Keyring**
 
 Auto-login bypasses the login screen so the keyring does not get unlocked automatically. You must set the keyring password to empty so it unlocks without prompting.
 
@@ -248,7 +242,7 @@ journalctl --user -u lisa-agent -f
 For parent process verification:
 
 ```bash
-ps -eo pid,ppid,comm --forest | grep -E "gnome-terminal|firefox|thunderbird|soffice|code|eog|evince|okular|shotwell|mupdf|oosplash|ssh|document-viewer|evince|atril|xreader|qpdfview"
+ps -eo pid,ppid,comm --forest | grep -E "gnome-terminal|firefox|thunderbird|soffice|code|eog|evince|okular|shotwell|mupdf|oosplash|ssh|document-viewer|evince|atril|xreader|qpdfview|log_writer"
 ```
 
 Then verify the parent of a specific process:
