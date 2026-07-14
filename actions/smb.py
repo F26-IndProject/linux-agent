@@ -18,6 +18,8 @@ import tempfile
 import time
 from datetime import datetime
 
+from utils.process import spawn_detached
+
 
 EDIT_TEMPLATES = [
     "Updated by team member on {date}. Changes reviewed and approved.",
@@ -75,7 +77,8 @@ def access_share(server="", share="", username="", password="", mode="browse"):
 
 
 def _smb_cmd(share_path, username, password, command, capture_output=False):
-    """Run a single smbclient command. Returns stdout if capture_output=True."""
+    """Run a single smbclient command via spawn so parent = systemd, not agent.
+    Returns stdout if capture_output=True."""
     cmd = ["smbclient", share_path]
     if username:
         cmd += ["-U", f"{username}%{password}"]
@@ -83,23 +86,53 @@ def _smb_cmd(share_path, username, password, command, capture_output=False):
         cmd += ["-N"]
     cmd += ["-c", command]
 
+    tmp_path = None
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0:
-            logging.info(f"smbclient '{command[:40]}' succeeded")
-            return result.stdout if capture_output else None
-        else:
-            logging.warning(f"smbclient '{command[:40]}' failed: {result.stderr[:200]}")
+        # Write output to temp file — spawn can't capture stdout directly
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        # Build shell command that redirects output to temp file
+        shell_parts = []
+        for part in cmd:
+            shell_parts.append(f'"{part}"' if " " in part else part)
+        shell_cmd = " ".join(shell_parts) + f" > {tmp_path} 2>&1"
+
+        pid = spawn_detached(["bash", "-c", shell_cmd])
+
+        if pid:
+            # Poll until process finishes (max 30s)
+            for _ in range(60):
+                if not os.path.exists(f"/proc/{pid}"):
+                    break
+                time.sleep(0.5)
+        elif pid is None:
+            logging.error("smbclient not installed — install with: sudo apt install smbclient")
             return None
-    except subprocess.TimeoutExpired:
-        logging.warning(f"smbclient '{command[:40]}' timed out")
-    except FileNotFoundError:
-        logging.error("smbclient not installed — install with: sudo apt install smbclient")
+
+        stdout = ""
+        try:
+            with open(tmp_path, "r", encoding="utf-8", errors="ignore") as f:
+                stdout = f.read()
+        except Exception:
+            pass
+
+        if "NT_STATUS" in stdout and "NT_STATUS_OK" not in stdout:
+            logging.warning(f"smbclient '{command[:40]}' failed: {stdout[:200]}")
+            return None
+
+        logging.info(f"smbclient '{command[:40]}' succeeded")
+        return stdout if capture_output else None
+
     except Exception as e:
         logging.error(f"smbclient error: {e}")
-    return None
+        return None
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
 
 
 def _list_share(share_path, username, password):
