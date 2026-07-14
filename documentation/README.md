@@ -50,7 +50,7 @@ The diagram below shows how spawn uses the double-fork technique to re-parent al
 
 The diagram below shows all components and how agent connects to them — threads, spawn, in-process libraries, database, and the SMB fix routing through spawn.
 
-![LISA Linux Agent Architecture](assets/architecture.png)
+![LISA Linux Agent Architecture](assets/linux-agent.png)
 
 **Key design principle:** The agent never appears as the parent of any process it launches. All child processes are launched through `spawn` which uses double-fork to re-parent them to systemd.
 
