@@ -24,6 +24,7 @@ import imaplib
 import logging
 import os
 import random
+import psutil
 import shutil
 import smtplib
 import ssl
@@ -91,7 +92,7 @@ def _pick_next_attachment():
 
 def _xdotool_available():
     """Check if xdotool is installed."""
-    return os.system("which xdotool > /dev/null 2>&1") == 0
+    return shutil.which("xdotool") is not None
 
 
 def _open_received_attachment_and_close(save_path: str):
@@ -239,11 +240,21 @@ def send_email(recipients=None):
     time.sleep(6)
 
     if _xdotool_available():
-        os.system("xdotool search --sync --onlyvisible --class Thunderbird windowfocus 2>/dev/null")
+        pid1 = spawn_detached(["xdotool", "search", "--sync", "--onlyvisible", "--class", "Thunderbird", "windowfocus"])
+        if pid1:
+            for _ in range(20):
+                if not os.path.exists(f"/proc/{pid1}"):
+                    break
+                time.sleep(0.5)
         time.sleep(1)
-        os.system("xdotool key ctrl+Return")
+        pid2 = spawn_detached(["xdotool", "key", "ctrl+Return"])
+        if pid2:
+            for _ in range(10):
+                if not os.path.exists(f"/proc/{pid2}"):
+                    break
+                time.sleep(0.5)
         logging.info("Send triggered via xdotool (Ctrl+Return)")
-        time.sleep(3)
+        time.sleep(5)
     else:
         logging.warning("xdotool not installed — compose window opened but send not triggered. "
                         "Install with: sudo apt install xdotool")
