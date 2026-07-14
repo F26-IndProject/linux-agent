@@ -6,6 +6,7 @@ import logging
 import os
 import random
 import shutil
+import psutil
 from datetime import datetime
 from pathlib import Path
 
@@ -24,7 +25,7 @@ def open_browser(urls=None, duration_min=15, duration_max=30):
     browsers = ["firefox", "chromium-browser", "chromium", "google-chrome", "xdg-open"]
     browser  = None
     for b in browsers:
-        if os.system(f"which {b} > /dev/null 2>&1") == 0:
+        if shutil.which(b):
             browser = b
             break
 
@@ -44,7 +45,7 @@ def open_vscode():
     Mirrors Windows open_vscode_with_code() exactly.
     File is kept after close — cleanup.py deletes it after 4 days.
     """
-    if os.system("which code > /dev/null 2>&1") != 0:
+    if not shutil.which("code"):
         logging.warning("VS Code (code) not found on system")
         return
 
@@ -77,14 +78,24 @@ def open_vscode():
         time.sleep(15)
 
         # Close VS Code
-        os.system("pkill -f 'code.*lisa_snippet'")
+        for p in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                if "code" in p.name().lower() and any("lisa_snippet" in a for a in (p.info["cmdline"] or [])):
+                    p.terminate()
+            except Exception:
+                pass
         if pid:
             _kill_pid(pid)
         logging.info("VS Code closed")
 
     except Exception as e:
         logging.error(f"VS Code action failed: {e}")
-        os.system("pkill -f 'code.*lisa_snippet'")
+        for p in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                if "code" in p.name().lower() and any("lisa_snippet" in a for a in (p.info["cmdline"] or [])):
+                    p.terminate()
+            except Exception:
+                pass
 
 def open_pdf_via_spawn(pdf_path: str):
     """
@@ -101,7 +112,12 @@ def open_pdf_via_spawn(pdf_path: str):
     spawn_detached([viewer, pdf_path])
     logging.info(f"PDF opened: {viewer}")
     time.sleep(read_time)
-    os.system(f"pkill -x {viewer} > /dev/null 2>&1")
+    for p in psutil.process_iter(["name"]):
+        try:
+            if p.name() == viewer:
+                p.terminate()
+        except Exception:
+            pass
     logging.info("PDF closed")
 
 
@@ -120,5 +136,10 @@ def open_image_via_spawn(image_path: str):
     spawn_detached([viewer, image_path])
     logging.info(f"Image opened: {viewer}")
     time.sleep(read_time)
-    os.system(f"pkill -x {viewer} > /dev/null 2>&1")
+    for p in psutil.process_iter(["name"]):
+        try:
+            if p.name() == viewer:
+                p.terminate()
+        except Exception:
+            pass
     logging.info("Image closed")
