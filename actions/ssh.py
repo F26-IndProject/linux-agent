@@ -12,6 +12,7 @@ import logging
 import os
 import random
 import time
+import psutil
 
 from utils.process import spawn_detached, _kill_pid
 
@@ -63,5 +64,10 @@ def connect(host="", username="", password="", duration_seconds=30):
 
     # Close the terminal
     _kill_pid(pid)
-    os.system("pkill -f 'bash -c.*ssh.*' > /dev/null 2>&1")
+    for p in psutil.process_iter(["pid", "cmdline"]):
+        try:
+            if any("ssh" in a for a in (p.info["cmdline"] or [])):
+                p.terminate()
+        except Exception:
+            pass
     logging.info(f"SSH session to {host} closed")

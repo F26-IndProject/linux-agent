@@ -9,10 +9,11 @@ import os
 import random
 import tempfile
 import time
+import psutil
 from datetime import datetime
 from pathlib import Path
 
-from utils.process import spawn_and_wait
+from utils.process import spawn_and_wait, spawn_detached
 from actions.templates.office import random_document_content, random_spreadsheet_data
 
 
@@ -37,17 +38,20 @@ def create_word_document(duration_min=20, duration_max=40):
     with open(txt_path, "w", encoding="utf-8") as f:
         f.write(content)
 
-    # Convert to ODT using LibreOffice headless
+    # Convert to ODT via spawn so parent = systemd, not agent
     try:
-        os.system(
-            f'libreoffice --headless --convert-to odt --outdir "{_docs_dir()}" "{txt_path}" '
-            f'> /dev/null 2>&1'
-        )
-        # Remove the intermediate txt file if ODT was created
+        pid = spawn_detached([
+            "libreoffice", "--headless", "--convert-to", "odt",
+            "--outdir", str(_docs_dir()), str(txt_path)
+        ])
+        if pid:
+            for _ in range(60):  # poll up to 30s
+                if filepath.exists():
+                    break
+                time.sleep(0.5)
         if filepath.exists():
             txt_path.unlink(missing_ok=True)
         else:
-            # Conversion failed, use txt
             filepath = txt_path
     except Exception:
         filepath = txt_path
@@ -57,7 +61,12 @@ def create_word_document(duration_min=20, duration_max=40):
 
     # Open in LibreOffice Writer (detached from agent)
     spawn_and_wait(["libreoffice", "--norestore", "--writer", str(filepath)], duration)
-    os.system("pkill -f soffice > /dev/null 2>&1")
+    for p in psutil.process_iter(["name"]):
+        try:
+            if "soffice" in p.name():
+                p.terminate()
+        except Exception:
+            pass
     logging.info(f"Writer session closed: {filepath.name}")
 
 
@@ -75,13 +84,18 @@ def create_excel_spreadsheet(duration_min=20, duration_max=40):
         writer.writerow(headers)
         writer.writerows(rows)
 
-    # Convert to ODS using LibreOffice headless
+    # Convert to ODS via spawn so parent = systemd, not agent
     ods_path = filepath.with_suffix(".ods")
     try:
-        os.system(
-            f'libreoffice --headless --convert-to ods --outdir "{_docs_dir()}" "{filepath}" '
-            f'> /dev/null 2>&1'
-        )
+        pid = spawn_detached([
+            "libreoffice", "--headless", "--convert-to", "ods",
+            "--outdir", str(_docs_dir()), str(filepath)
+        ])
+        if pid:
+            for _ in range(60):  # poll up to 30s
+                if ods_path.exists():
+                    break
+                time.sleep(0.5)
         if ods_path.exists():
             filepath.unlink(missing_ok=True)
             filepath = ods_path
@@ -92,5 +106,10 @@ def create_excel_spreadsheet(duration_min=20, duration_max=40):
     logging.info(f"Created spreadsheet: {filepath.name}, opening for {duration}s")
 
     spawn_and_wait(["libreoffice", "--norestore", "--calc", str(filepath)], duration)
-    os.system("pkill -f soffice > /dev/null 2>&1")
+    for p in psutil.process_iter(["name"]):
+        try:
+            if "soffice" in p.name():
+                p.terminate()
+        except Exception:
+            pass
     logging.info(f"Calc session closed: {filepath.name}")
