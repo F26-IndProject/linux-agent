@@ -11,6 +11,7 @@ import logging
 import os
 import random
 import sys
+import psutil
 import threading
 import time
 import uuid
@@ -64,11 +65,8 @@ if args.debug:
 def _launch_log_writer():
     """Launch log_writer via spawn binary so parent = systemd."""
     try:
-        result = subprocess.run(
-            ["pgrep", "-x", "log_writer"],
-            capture_output=True, text=True
-        )
-        if result.stdout.strip():
+        import psutil
+        if any(p.name() == "log_writer" for p in psutil.process_iter(["name"])):
             return
         if getattr(sys, 'frozen', False):
             base = Path(sys.executable).parent.parent  # dist/ -> linux-agent/
