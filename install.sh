@@ -49,6 +49,7 @@ systemctl --user stop gnome-remote-desktop
 grdctl rdp disable
 grdctl rdp enable
 systemctl --user start gnome-remote-desktop
+systemctl --user enable gnome-remote-desktop
 if ss -tlnp | grep -q 3389; then
     echo "RDP is listening on port 3389 ✓"
 else
