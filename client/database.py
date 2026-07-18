@@ -5,6 +5,7 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 import psycopg2
@@ -35,20 +36,32 @@ class DatabaseManager:
             logging.info("Disconnected from database")
     def _execute(self, query: str, params: tuple = None):
         with self._lock:
-            try:
-                with self.connection.cursor() as cursor:
-                    cursor.execute(query, params)
-                    if cursor.description:
-                        columns = [d[0] for d in cursor.description]
-                        return [dict(zip(columns, row)) for row in cursor.fetchall()]
-                    else:
-                        self.connection.commit()
-                        return []
-            except Exception as e:
-                logging.error(f"Query failed: {e}")
-                if self.connection:
-                    self.connection.rollback()
-                return []
+            for attempt in range(5):
+                try:
+                    with self.connection.cursor() as cursor:
+                        cursor.execute(query, params)
+                        if cursor.description:
+                            columns = [d[0] for d in cursor.description]
+                            return [dict(zip(columns, row)) for row in cursor.fetchall()]
+                        else:
+                            self.connection.commit()
+                            return []
+                except (psycopg2.OperationalError, psycopg2.InterfaceError) as e:
+                    logging.warning(f"Database connection lost — reconnecting (attempt {attempt + 1}/5): {e}")
+                    time.sleep(10)
+                    try:
+                        self.connection = psycopg2.connect(**DB_CONFIG)
+                    except Exception as re:
+                        logging.error(f"Reconnect failed: {re}")
+                except Exception as e:
+                    logging.error(f"Query failed: {e}")
+                    try:
+                        self.connection.rollback()
+                    except Exception:
+                        pass
+                    return []
+            logging.error("Query failed after 5 reconnect attempts — giving up")
+            return []
     def ensure_agent_exists(self, agent_id: str, username: str, role: str) -> Optional[int]:
         results = self._execute(
             "SELECT id FROM agents WHERE agent_id = %s",
